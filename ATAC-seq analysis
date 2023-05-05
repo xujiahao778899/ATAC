@@ -1,0 +1,4 @@
+#####mapping
+bowtie2 -p 20 -x /sdd/xujiahao/chip/bowtie2_index_mm10/mm10 -1 $fq1 -2 $fq2 -X 2000  -S ${name}.sam &> ${name}.txt
+samtools view -Su ${name}.sam -@ 8 -o ${name}.bam
+samtools sort ${name}.bam -o ${name}.s.bam
