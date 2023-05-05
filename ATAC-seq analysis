@@ -1,4 +1,43 @@
-#####mapping
+##### mapping and convert sam to bam #####
 bowtie2 -p 20 -x /sdd/xujiahao/chip/bowtie2_index_mm10/mm10 -1 $fq1 -2 $fq2 -X 2000  -S ${name}.sam &> ${name}.txt
 samtools view -Su ${name}.sam -@ 8 -o ${name}.bam
 samtools sort ${name}.bam -o ${name}.s.bam
+
+
+##### filter the bam file ####
+
+samtools view -F 1804 -f 2 -q 30 -u $id -o ${name}.1830.bam -@ 10
+samtools sort -n ${name}.1830.bam -o ${name}.1830.ns.bam -@ 10
+rm -rf ${name}.1830.bam
+samtools fixmate -r ${name}.1830.ns.bam ${name}.1830.ns.fm.bam -@ 10
+rm -rf ${name}.1830.ns.bam
+samtools view -F 1804 -f 2 -u ${name}.1830.ns.fm.bam -@ 10 | samtools sort /dev/stdin -o ${name}.filt.bam -@ 8
+rm -rf ${name}.1830.ns.fm.bam
+sambamba markdup ${name}.filt.bam ${name}.md.bam -t 8
+samtools view -F 1804 -f 2 -b ${name}.md.bam -o ${name}.d.bam -@ 10
+rm -rf ${name}.md.bam
+samtools sort   ${name}.d.bam -o ${name}.s.d.bam -@ 10
+samtools sort -n ${name}.filt.bam -o ${name}.filt.ns.bam -@ 10
+
+#### caluate PBC1,PBC2,PBC3,NF
+bedtools bamtobed -bedpe -i ${name}.filt.ns.bam | awk 'BEGIN{OFS="\t"}{print $1,$2,$4,$6,$9,$10}' | grep -v 'chrM' | sort | uniq -c | awk 'BEGIN{mt=0;m0=0;m1=0;m2=0} ($1==1){m1=m1+1} ($1==2){m2=m2+1} {m0=m0+1} {mt=mt+$1} END{printf "%d\t%d\t%d\t%d\t%f\t%f\t%f\n",mt,m0,m1,m2,m0/mt,m1/m0,m1/m2}' > ${name}.PBC.txt
+
+#### convert bam to tagAlign ####
+bedtools bamtobed -bedpe -mate1 -i $id |gzip -nc > ${name}.bedpe.gz
+zcat ${name}.bedpe.gz| awk 'BEGIN{OFS="\t"}{printf "%s\t%s\t%s\tN\t1000\t%s\n%s\t%s\t%s\tN\t1000\t%s\n",$1,$2,$3,$9,$4,$5,$6,$10}' |  gzip -nc > ${name}.tagAlign.gz
+
+#### shitf 9bp ####
+zcat $tag | awk -F $'\t' 'BEGIN {OFS = FS}{ if ($6 == "+") {$2 = $2 + 4} else if ($6 == "-") {$3 = $3 - 5} print $0}' | gzip -nc > $shifted_tag
+
+#### call peak and generate bw file ####
+macs2 callpeak -t $fq1 -f BED -g mm -p 0.01 --shift -75 --extsize 150 --nomodel -B --SPMR --keep-dup all --call-summits -n ${name}
+
+macs2 bdgcmp -t ${name} -c ${name} -o ${name}.FE.bdg -m FE 
+bedClip ${name}.FE.bdg chromsize ${name}.FE.C.bdg
+sort -k1,1 -k2,2n ${name}.FE.C.bdg >${name}.FE.C.S.bdg
+bedGraphToBigWig ${name}.FE.C.S.bdg chromsize ${name}.FE.C.S.bigwig
+
+#### IDR and choose IDR<0.05 peaks ####
+idr --samples ${REP1_PEAK_FILE} ${REP2_PEAK_FILE} --peak-list ${POOLED_PEAK_FILE} --input-file-type narrowPeak --output-file ${IDR_OUTPUT} --rank p.value --soft-idr-threshold ${IDR_THRESH} --plot --use-best-multisummit-IDR
+
+awk 'BEGIN{OFS="\t"} $12>='"$(awk -v p=0.05 'BEGIN{print -log(p)/log(10)}')"'{print $1,$2,$3,$4,$5,$6,$7,$8,$9,$10}' IDR_out5|sort|uniq|sort -k7n,7n|gzip -nc>re1212.IDR0.05.gz
